@@ -1,3 +1,9 @@
+# App data
+config/*.json
+config/onfido_token.txt
+data/*
+.DS_Store
+
 # Logs
 logs
 *.log
