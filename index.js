@@ -2,25 +2,39 @@
 
 const Onfido = require('onfido');
 var fs = require('fs');
+
+// configurable variables
 // rate limit to 4 requests/sec max, based on https://documentation.onfido.com/#rate-limits
 const throttle = require('promise-ratelimit')(200);
-const secret = fs.readFileSync('config/onfido_token.txt', 'utf8');
 const recordsPerPage = 100;
+const applicantsDataPath = 'data/applicants.json';
+const processedDataPath = 'data/processed.json';
 
+// no need to configure below, initialization
+const secret = fs.readFileSync('config/onfido_token.txt', 'utf8');
 const defaultClient = Onfido.ApiClient.instance;
 const tokenAuth = defaultClient.authentications['Token'];
 tokenAuth.apiKey = 'token='+secret;
 tokenAuth.apiKeyPrefix = 'Token';
-if (!fs.existsSync('data')) fs.mkdirSync('data');
 const api = new Onfido.DefaultApi();
+var markedAsProcessed = [];
 
 (async () => {
   // get all applicants you’ve created
-  var allApplicants = await listAllApplicants();
-  console.log(`${allApplicants.length} total applicants received`);
-
-  fs.writeFileSync('data/applicants.json', JSON.stringify(allApplicants, null, 2));
-  console.log('Applicants data saved to data/applicants.json');
+  var allApplicants;
+  if (!fs.existsSync('data')) fs.mkdirSync('data');
+  if (fs.existsSync(processedDataPath)) {
+    markedAsProcessed = JSON.parse(fs.readFileSync(processedDataPath, 'utf8'));
+  }
+  if (fs.existsSync(applicantsDataPath)) {
+    allApplicants = JSON.parse(fs.readFileSync(applicantsDataPath, 'utf8'));
+  }
+  else {
+    allApplicants = await listAllApplicants();
+    fs.writeFileSync(applicantsDataPath, JSON.stringify(allApplicants, null, 2));
+    console.log('Updated applicants data saved to ' + applicantsDataPath);
+  }
+  console.log(`${allApplicants.length} total applicants to be processed.`);
 
   // get all documents for every applicant and save them to disk
   allApplicants.forEach(entry => saveApplicantDocuments(entry.id));
@@ -34,11 +48,11 @@ async function listAllApplicants() {
 
     console.log(`Downloading applicants data, ${recordsPerPage} records per page:`);
 
-    while (currentPage == 0 || (applicants.length == recordsPerPage)) {
+    while (currentPage == 0 || applicants.length == recordsPerPage) {
       currentPage++;
-      console.log(`Getting page ${currentPage}`);
       
       await throttle();
+      console.log(`Getting page ${currentPage}`);
       var { applicants } = await api.listApplicants({per_page: recordsPerPage, page: currentPage});
       applicants.forEach(entry => allApplicants.push(entry));
     }
@@ -51,26 +65,32 @@ async function listAllApplicants() {
 }
 
 async function saveApplicantDocuments(applicantId) {
-  try {
-    console.log(`Requesting documents for applicant ${applicantId}...`);
-    
-    await throttle();
-    const { documents } = await api.listDocuments(applicantId);
-    
-    const path = 'data/'+applicantId;
-    if (!fs.existsSync(path)) fs.mkdirSync(path);
-    documents.forEach(document => saveApplicantDocument(applicantId, document.id, document.type, document.file_type));
-  } catch(e) {
-    console.log('ERROR CAUGHT:');
-    console.log(e);
+  if (!markedAsProcessed.includes(applicantId)) {
+    try {
+      await throttle();
+      console.log(`Requesting documents for applicant ${applicantId}...`);
+      const { documents } = await api.listDocuments(applicantId);
+      
+      const path = 'data/'+applicantId;
+      if (!fs.existsSync(path)) fs.mkdirSync(path);
+      documents.forEach(document => saveApplicantDocument(applicantId, document));
+    } catch(e) {
+      console.log('ERROR CAUGHT:');
+      console.log(e);
+    }
   }
 }
 
-async function saveApplicantDocument(applicantId, documentId, docType, fileType) {
+async function saveApplicantDocument(applicantId, document) {
   try {
-    const path = `data/${applicantId}/${docType}-${documentId}.${fileType}`;
+    const documentId = document.id, 
+          docType = document.type, 
+          fileType = document.file_type, 
+          fileSize = document.file_size,
+          path = `data/${applicantId}/${docType}-${documentId}.${fileType}`;
+
     // this allows to download files only once and save a lot of traffic and requests
-    if (!fs.existsSync(path)) {
+    if (!fs.existsSync(path) || fs.statSync(path)['size'] != fileSize) {
       await throttle();
       const document = await api.apiClient.callApi(
         `/applicants/${applicantId}/documents/${documentId}/download`, 'GET',
@@ -83,6 +103,11 @@ async function saveApplicantDocument(applicantId, documentId, docType, fileType)
 
       fs.writeFileSync(path, document.data);
       console.log(`Saved document ${docType} ${documentId} for applicant ${applicantId}`);
+    }
+    else {
+      markedAsProcessed.push(applicantId);
+      // that sucks, neet to do once:
+      fs.writeFileSync(processedDataPath, JSON.stringify(markedAsProcessed, null, 2));
     }
   } catch(e) {
     console.log('ERROR CAUGHT:');

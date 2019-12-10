@@ -1,6 +1,6 @@
 # App data
 config/*.json
-config/onfido_token.txt
+config/*.txt
 data/*
 .DS_Store
 
