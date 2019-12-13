@@ -23,6 +23,7 @@
   },
   "homepage": "https://github.com/Aldekein/onfido-backuper#readme",
   "dependencies": {
+    "mysql": "^2.17.1",
     "onfido": "^4.3.0",
     "promise-ratelimit": "0.0.3"
   }
